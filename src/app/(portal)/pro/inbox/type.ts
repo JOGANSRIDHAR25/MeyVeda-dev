@@ -1,0 +1,23 @@
+export type InboxThread = {
+  id: string;
+  patientId: string;
+  patientName: string;
+  patientInitials: string;
+  lastMessage: string;
+  lastMessageTime: string;
+  unread: boolean;
+  unreadCount: number;
+  consultationId: string;
+};
+
+export type MessageRow = {
+  id: string;
+  consultationId: string;
+  senderName: string;
+  direction: string;
+  content: string;
+  sentAt: string;
+  isRead: boolean;
+  attachment?: { name: string; type: string; size: number; url: string } | null;
+  replyTo?: { direction: string; content: string } | null;
+};
