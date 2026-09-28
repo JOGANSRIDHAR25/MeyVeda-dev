@@ -132,6 +132,8 @@ const STATUS_CONFIG: Record<
 function isAppointmentTimePast(
   dateStr: string,
   timeStr: string,
+  slotDurationMin: number,
+  bufferMin: number,
 ): boolean {
   const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
   if (!match) {
@@ -153,7 +155,13 @@ function isAppointmentTimePast(
     Number(minuteRaw),
   );
 
-  return appointmentDate.getTime() < Date.now();
+  // An appointment stays active for its full window — start time plus the
+  // practitioner's configured slot duration and buffer — not just until the
+  // scheduled start time is reached.
+  const windowEnd =
+    appointmentDate.getTime() + (slotDurationMin + bufferMin) * 60_000;
+
+  return windowEnd < Date.now();
 }
 
 export default function ProDashboardPage() {
@@ -226,10 +234,18 @@ export default function ProDashboardPage() {
   // ── Upcoming appointments (today + future) ──────────────────────────────────
   const { data: rawUpcoming, loading: upcomingLoading } =
     usePractitionerUpcomingAppointments(practitioner?.id);
+  const slotDurationMin = practitioner?.slotDuration ?? 20;
+  const bufferMin = practitioner?.bufferMin ?? 0;
   const upcomingAppointments: PractitionerUpcomingAppointment[] = (
     rawUpcoming ?? []
   ).filter(
-    (appointment) => !isAppointmentTimePast(appointment.date, appointment.time),
+    (appointment) =>
+      !isAppointmentTimePast(
+        appointment.date,
+        appointment.time,
+        slotDurationMin,
+        bufferMin,
+      ),
   );
 
   // Split into today vs future.

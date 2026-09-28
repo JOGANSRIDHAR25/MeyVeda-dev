@@ -16,6 +16,7 @@ import type { AuthUser } from "@/shared/auth/auth.types";
 import { resolveActingPractitionerUserId } from "@/shared/auth/resolve-practitioner-context";
 import { AppError } from "@/shared/api/api-error";
 import { resolveActiveFeeRupees } from "@/lib/fee";
+import { getAppointmentCutoffMs, isAppointmentPastCutoff } from "@/shared/appointments/missed-cutoff";
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
@@ -52,6 +53,8 @@ export type AppointmentRow = {
   reason?: string;
   refunded?: boolean;
   reminder: boolean;
+  /** e.g. "7:00 PM" — when this slot's grace window (duration + buffer) ends, for upcoming appointments only. */
+  expiresAtLabel?: string;
 };
 
 export type JitsiVideoSession = {
@@ -895,15 +898,15 @@ export class AppointmentsService {
     const jwt =
       jitsiAppId && jitsiAppSecret
         ? signJitsiJwt({
-            appId: jitsiAppId,
-            appSecret: jitsiAppSecret,
-            roomName: appointment.video_room_name,
-            userId: authUser.id,
-            displayName,
-            isModerator:
-              requestingRole === "practitioner" ||
-              requestingRole === "admin",
-          })
+          appId: jitsiAppId,
+          appSecret: jitsiAppSecret,
+          roomName: appointment.video_room_name,
+          userId: authUser.id,
+          displayName,
+          isModerator:
+            requestingRole === "practitioner" ||
+            requestingRole === "admin",
+        })
         : undefined;
 
     return {
@@ -1057,8 +1060,7 @@ export class AppointmentsService {
       )}`;
 
       const appointmentDate = new Date(
-        `${row.scheduled_date}T${
-          row.scheduled_time || "00:00:00"
+        `${row.scheduled_date}T${row.scheduled_time || "00:00:00"
         }`,
       );
 
@@ -1071,13 +1073,13 @@ export class AppointmentsService {
       const dateText = isToday
         ? `Today, ${formatTime(row.scheduled_time)}`
         : `${appointmentDate.toLocaleDateString(
-            "en-IN",
-            {
-              day: "numeric",
-              month: "short",
-              year: "numeric",
-            },
-          )} · ${formatTime(row.scheduled_time)}`;
+          "en-IN",
+          {
+            day: "numeric",
+            month: "short",
+            year: "numeric",
+          },
+        )} · ${formatTime(row.scheduled_time)}`;
 
       let uiStatus:
         | "upcoming"
@@ -1088,14 +1090,19 @@ export class AppointmentsService {
         | "missed"
         | undefined;
 
-      // "Missed" is derived from the scheduled window (start + duration),
-      // not just the start time, so a slot in progress never flashes as
-      // missed. Deriving it from immutable stored fields (date/time/
-      // duration/status) instead of a separate write keeps it stable
-      // across refreshes even before the async no_show job runs.
-      const scheduledEndTime =
-        appointmentDate.getTime() +
-        (row.duration_min ?? 30) * 60_000;
+      // "Missed" is derived from the scheduled window (start + the
+      // practitioner's own slot duration + buffer — the same dynamic cutoff
+      // the doctor's queue and the notifications sweep use), not just the
+      // start time, so a slot in progress never flashes as missed. Deriving
+      // it from immutable stored fields (date/time/practitioner settings/
+      // status) instead of a separate write keeps it stable across refreshes
+      // even before the async no_show job runs.
+      const isPastCutoff = isAppointmentPastCutoff(
+        row.scheduled_date,
+        row.scheduled_time,
+        practitioner?.slot_duration_min,
+        practitioner?.buffer_min
+      );
 
       if (row.status === "cancelled") {
         uiStatus = "cancelled";
@@ -1104,11 +1111,23 @@ export class AppointmentsService {
         pastOutcome = "completed";
       } else if (
         row.status === "no_show" ||
-        scheduledEndTime < Date.now()
+        isPastCutoff
       ) {
         uiStatus = "past";
         pastOutcome = "missed";
       }
+
+      const expiresAtLabel =
+        uiStatus === "upcoming"
+          ? new Date(
+            getAppointmentCutoffMs(
+              row.scheduled_date,
+              row.scheduled_time,
+              practitioner?.slot_duration_min,
+              practitioner?.buffer_min
+            )
+          ).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })
+          : undefined;
 
       const consultation = getFirst(
         row.consultation,
@@ -1146,6 +1165,7 @@ export class AppointmentsService {
           row.cancellation_reason ?? undefined,
         refunded: row.status === "cancelled",
         reminder: false,
+        expiresAtLabel,
       };
     });
   }

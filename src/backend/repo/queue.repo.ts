@@ -1,4 +1,5 @@
 import { createClient } from "@/shared/db/supabase.server";
+import { isAppointmentPastCutoff } from "@/shared/appointments/missed-cutoff";
 
 function formatTime(timeStr: string): string {
   if (!timeStr) return "";
@@ -97,15 +98,10 @@ export class QueueRepository {
           .maybeSingle();
         const durationMin = settingsRow?.slot_duration_min || 20;
         const bufferMin = settingsRow?.buffer_min || 0;
-        const now = Date.now();
 
         missedAppointments = appointments.filter((appt: any) => {
           if (appt.status !== "scheduled" || !appt.scheduled_time) return false;
-          const [h, m] = appt.scheduled_time.split(":").map(Number);
-          const slotStart = new Date(`${targetDate}T00:00:00`);
-          slotStart.setHours(h, m, 0, 0);
-          const cutoff = slotStart.getTime() + (durationMin + bufferMin) * 60000;
-          return now > cutoff;
+          return isAppointmentPastCutoff(targetDate, appt.scheduled_time, durationMin, bufferMin);
         });
       }
 

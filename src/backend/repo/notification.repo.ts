@@ -1,6 +1,7 @@
 import { createClient } from "@/shared/db/supabase.server";
 import { AppError } from "@/shared/api/api-error";
 import { EmailService } from "../service/email.service";
+import { isAppointmentPastCutoff } from "@/shared/appointments/missed-cutoff";
 
 // "missed" isn't a real appointment_status enum value — the terminal state
 // for a missed appointment is written as "no_show" below.
@@ -33,7 +34,7 @@ export class NotificationRepository {
         status,
         scheduled_date,
         scheduled_time,
-        practitioner:practitioners ( full_name )
+        practitioner:practitioners ( full_name, slot_duration_min, buffer_min )
       `)
       .eq("patient_id", patientId)
       .lte("scheduled_date", todayStr)
@@ -54,13 +55,20 @@ export class NotificationRepository {
     const patientEmail = (patientUser as any)?.email as string | undefined;
     const patientFullName = patientRow?.full_name || "Patient";
 
-    const now = Date.now();
-
     for (const appt of (appointments || []) as any[]) {
       if (!appt.scheduled_date || !appt.scheduled_time) continue;
 
-      const scheduledAt = new Date(`${appt.scheduled_date}T${appt.scheduled_time}`).getTime();
-      if (Number.isNaN(scheduledAt) || scheduledAt >= now) continue;
+      // Same slot-duration + buffer grace window as the doctor's queue view —
+      // pulled live from that appointment's own practitioner, since it varies
+      // doctor to doctor and can change over time.
+      const practitionerRow = Array.isArray(appt.practitioner) ? appt.practitioner[0] : appt.practitioner;
+      const isPast = isAppointmentPastCutoff(
+        appt.scheduled_date,
+        appt.scheduled_time,
+        practitionerRow?.slot_duration_min,
+        practitionerRow?.buffer_min
+      );
+      if (!isPast) continue;
 
       // Conditional update: only proceeds (and only one caller wins) if the
       // appointment is still in the status we just read, preventing duplicate

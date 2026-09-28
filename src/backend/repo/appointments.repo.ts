@@ -27,57 +27,61 @@ export type AppointmentDbRow = {
   cancelled_at: string | null;
 
   slot:
-    | {
-        fee: number | null;
-      }
-    | {
-        fee: number | null;
-      }[]
-    | null;
+  | {
+    fee: number | null;
+  }
+  | {
+    fee: number | null;
+  }[]
+  | null;
 
   practitioner:
-    | {
-        id: string;
-        full_name: string | null;
-        specializations: string[] | null;
-        disciplines: string[] | null;
-        base_video_fee: number | null;
-        base_clinic_fee: number | null;
-      }
-    | {
-        id: string;
-        full_name: string | null;
-        specializations: string[] | null;
-        disciplines: string[] | null;
-        base_video_fee: number | null;
-        base_clinic_fee: number | null;
-      }[]
-    | null;
+  | {
+    id: string;
+    full_name: string | null;
+    specializations: string[] | null;
+    disciplines: string[] | null;
+    base_video_fee: number | null;
+    base_clinic_fee: number | null;
+    slot_duration_min: number | null;
+    buffer_min: number | null;
+  }
+  | {
+    id: string;
+    full_name: string | null;
+    specializations: string[] | null;
+    disciplines: string[] | null;
+    base_video_fee: number | null;
+    base_clinic_fee: number | null;
+    slot_duration_min: number | null;
+    buffer_min: number | null;
+  }[]
+  | null;
 
   consultation:
+  | {
+    id: string;
+    rating:
     | {
-        id: string;
-        rating:
-          | {
-              stars: number | null;
-            }
-          | {
-              stars: number | null;
-            }[]
-          | null;
-      }
+      stars: number | null;
+    }
     | {
-        id: string;
-        rating:
-          | {
-              stars: number | null;
-            }
-          | {
-              stars: number | null;
-            }[]
-          | null;
-      }[]
+      stars: number | null;
+    }[]
     | null;
+  }
+  | {
+    id: string;
+    rating:
+    | {
+      stars: number | null;
+    }
+    | {
+      stars: number | null;
+    }[]
+    | null;
+  }[]
+  | null;
 };
 
 export type AppointmentOwnershipRow = {
@@ -109,24 +113,24 @@ export type AppointmentVideoRow = {
   duration_min: number | null;
 
   patient:
-    | { full_name: string | null }
-    | { full_name: string | null }[]
-    | null;
+  | { full_name: string | null }
+  | { full_name: string | null }[]
+  | null;
 
   practitioner:
-    | {
-        user_id: string | null;
-        full_name: string | null;
-        specializations: string[] | null;
-        disciplines: string[] | null;
-      }
-    | {
-        user_id: string | null;
-        full_name: string | null;
-        specializations: string[] | null;
-        disciplines: string[] | null;
-      }[]
-    | null;
+  | {
+    user_id: string | null;
+    full_name: string | null;
+    specializations: string[] | null;
+    disciplines: string[] | null;
+  }
+  | {
+    user_id: string | null;
+    full_name: string | null;
+    specializations: string[] | null;
+    disciplines: string[] | null;
+  }[]
+  | null;
 };
 
 type SlotAppointmentData = {
@@ -184,7 +188,9 @@ const APPOINTMENT_SELECT = `
     specializations,
     disciplines,
     base_video_fee,
-    base_clinic_fee
+    base_clinic_fee,
+    slot_duration_min,
+    buffer_min
   ),
   consultation:consultations (
     id,
@@ -960,7 +966,7 @@ export class AppointmentsRepository {
             1,
             Math.ceil(
               (now.getTime() - startedAt.getTime()) /
-                60_000,
+              60_000,
             ),
           );
         }

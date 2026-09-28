@@ -51,7 +51,7 @@ export class PatientInboxRepository {
       `)
       .eq("patient_id", patientId)
       .order("created_at", { ascending: false })
-      .limit(30);
+      .limit(200);
 
     if (error) {
       console.error("[PatientInboxRepository] Error fetching inbox:", error.message);
@@ -83,6 +83,18 @@ export class PatientInboxRepository {
         };
       })
       .sort((a: any, b: any) => new Date(b._sortTime).getTime() - new Date(a._sortTime).getTime())
+      // One thread per practitioner: a person with several consultations must appear once.
+      // Rows are sorted newest-first, so the first row seen is the latest consultation.
+      .reduce((acc: any[], t: any) => {
+        const existing = acc.find((x) => x.practitionerId === t.practitionerId);
+        if (existing) {
+          existing.unreadCount += t.unreadCount;
+          existing.unread = existing.unreadCount > 0;
+        } else {
+          acc.push(t);
+        }
+        return acc;
+      }, [])
       .map(({ _sortTime, ...thread }: any) => thread);
   }
 }

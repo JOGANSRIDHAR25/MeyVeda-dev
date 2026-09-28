@@ -60,12 +60,26 @@ export class MessageRepository {
     return data;
   }
 
+  static async getRelatedConsultationIds(consultationId: string): Promise<string[]> {
+    const participants = await this.getConsultationParticipants(consultationId);
+    if (!participants) return [consultationId];
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .from("consultations")
+      .select("id")
+      .eq("patient_id", participants.patient_id)
+      .eq("practitioner_id", participants.practitioner_id);
+    if (error || !data?.length) return [consultationId];
+    return data.map((r: any) => r.id);
+  }
+
   static async getMessagesForConsultation(consultationId: string): Promise<MessageRow[]> {
     const supabase = await createClient();
+    const consultationIds = await this.getRelatedConsultationIds(consultationId);
     const { data, error } = await supabase
       .from("bounded_messages")
       .select("id, consultation_id, direction, content, sent_at, read_at, attachment_path, attachment_name, attachment_type, attachment_size, reply_to_id")
-      .eq("consultation_id", consultationId)
+      .in("consultation_id", consultationIds)
       .order("sent_at", { ascending: true });
 
     if (error) {
@@ -117,12 +131,13 @@ export class MessageRepository {
 
   static async markRead(consultationId: string, readerRole: "patient" | "practitioner"): Promise<void> {
     const supabase = await createClient();
+    const consultationIds = await this.getRelatedConsultationIds(consultationId);
     const directionToMark = readerRole === "patient" ? "doctor_to_patient" : "patient_to_doctor";
 
     const { error } = await supabase
       .from("bounded_messages")
       .update({ read_at: new Date().toISOString() })
-      .eq("consultation_id", consultationId)
+      .in("consultation_id", consultationIds)
       .eq("direction", directionToMark)
       .is("read_at", null);
 
