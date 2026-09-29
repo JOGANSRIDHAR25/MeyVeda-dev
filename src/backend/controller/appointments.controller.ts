@@ -5,6 +5,7 @@ import {
   createAppointmentSchema,
   createFollowUpAppointmentSchema,
   cancelAppointmentSchema,
+  appointmentIdParamSchema,
   videoAppointmentIdParamSchema,
   updateVideoStatusSchema,
 } from "../service/appointments.service";
@@ -221,6 +222,55 @@ export async function cancelAppointmentController(
   return apiSuccess(
     null,
     "Appointment cancelled successfully",
+  );
+}
+
+/**
+ * PATCH /api/appointments?action=start-consult&appointmentId=...
+ *
+ * The practitioner starts an in-clinic consultation (checks the patient in).
+ */
+export async function startClinicConsultController(
+  req: NextRequest,
+  appointmentId: string,
+) {
+  const auth = await requireAuth(req);
+
+  requirePermission(
+    auth,
+    PERMISSIONS.APPOINTMENTS_UPDATE,
+  );
+
+  const parsedParams =
+    appointmentIdParamSchema.safeParse({
+      id: appointmentId,
+    });
+
+  if (!parsedParams.success) {
+    throw new ValidationError(
+      "Invalid appointment ID",
+      parsedParams.error.format(),
+    );
+  }
+
+  await AppointmentsService.startClinicConsult(
+    auth,
+    parsedParams.data.id,
+  );
+
+  await writeAuditLog({
+    userId: auth.id,
+    role: auth.role,
+    action: "start_clinic_consultation",
+    module: "appointments",
+    recordId: parsedParams.data.id,
+    ipAddress: getRequestIp(req),
+    userAgent: getRequestUserAgent(req),
+  });
+
+  return apiSuccess(
+    null,
+    "Consultation started",
   );
 }
 

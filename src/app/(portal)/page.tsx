@@ -117,15 +117,11 @@ export default function HomePage() {
     return isNaN(parsedTime) ? Infinity : parsedTime;
   };
 
-  const currentNow = new Date().getTime();
-
+  // "upcoming" already means still joinable: the backend keeps a slot
+  // upcoming until its cutoff (start + slot duration + buffer), and for as
+  // long as it's in session — so don't drop it here once the start time passes.
   const upcomingAppointments = (appointments ?? [])
-    .filter((a) => {
-      if (a.status !== "upcoming") return false;
-      const apptTime = parseApptDate(a.date);
-      if (apptTime < currentNow) return false;
-      return true;
-    })
+    .filter((a) => a.status === "upcoming")
     .sort((a, b) => {
       const dateA = parseApptDate(a.date);
       const dateB = parseApptDate(b.date);

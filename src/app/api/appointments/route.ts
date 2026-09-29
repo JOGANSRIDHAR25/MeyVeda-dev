@@ -7,6 +7,7 @@ import {
   cancelAppointmentController,
   getOrCreateVideoSessionController,
   updateVideoSessionStatusController,
+  startClinicConsultController,
 } from "@/backend/controller/appointments.controller";
 
 import { withErrorHandler } from "@/backend/middleware/error.middleware";
@@ -47,16 +48,23 @@ export const PATCH = withErrorHandler(
     const action =
       req.nextUrl.searchParams.get("action");
 
+    const appointmentId =
+      req.nextUrl.searchParams.get(
+        "appointmentId",
+      ) ?? "";
+
+    if (action === "start-consult") {
+      return startClinicConsultController(
+        req,
+        appointmentId,
+      );
+    }
+
     if (action !== "video-status") {
       throw new Error(
         "Unsupported appointment update action",
       );
     }
-
-    const appointmentId =
-      req.nextUrl.searchParams.get(
-        "appointmentId",
-      ) ?? "";
 
     return updateVideoSessionStatusController(
       req,

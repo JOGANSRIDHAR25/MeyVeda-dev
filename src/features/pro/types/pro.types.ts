@@ -2,6 +2,7 @@
  * Practitioner portal (Pro) types.
  */
 import type { QueueStatus } from "@/types/common.types";
+import type { MissedBy } from "@/shared/appointments/attendance";
 
 export type ScheduleRow = {
   id: string;
@@ -47,6 +48,8 @@ export type QueuePatient = {
   time: string;
   mode: "video" | "clinic";
   status: QueueStatus;
+  /** For a missed appointment: who didn't show up. */
+  missedBy?: MissedBy | null;
   waitMins: number;
   reason: string;
   abha: string | null;

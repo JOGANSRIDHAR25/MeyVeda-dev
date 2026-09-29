@@ -27,6 +27,7 @@ import { useQuery } from "@/hooks/useQuery";
 import { cn } from "@/lib/utils";
 import type { QueuePatient, QueueStatus } from "@/lib/types";
 import { apiClient } from "@/shared/api/api-client";
+import { MISSED_BY_LABEL_FOR_DOCTOR } from "@/shared/appointments/attendance";
 
 type PractitionerUpcomingAppointment = {
   appointmentId: string;
@@ -114,6 +115,12 @@ const STATUS_CONFIG: Record<
     color:
       "bg-emerald-50 text-emerald-700 border border-emerald-200",
     dot: "bg-emerald-500 animate-pulse",
+  },
+  "awaiting-notes": {
+    label: "Awaiting Notes",
+    color:
+      "bg-violet-50 text-violet-700 border border-violet-200",
+    dot: "bg-violet-500",
   },
   completed: {
     label: "Completed",
@@ -208,8 +215,40 @@ export default function ProDashboardPage() {
 
   // ── Queue for selected date ─────────────────────────────────────────────────
   // usePractitionerQueue expects the practitioners table PK (practitioner?.id).
-  const { data: rawQueuePatients, loading: queueLoading } =
+  const { data: rawQueuePatients, loading: queueLoading, refetch: refetchQueue } =
     usePractitionerQueue(practitioner?.id, selectedDate);
+  const [startingConsultId, setStartingConsultId] = useState<string | null>(null);
+
+  const openConsultForm = async (patient: QueuePatient) => {
+    await setNavContext("patient", {
+      patientId: patient.id,
+      appointmentId: patient.appointmentId,
+    });
+    router.push("/pro/patient");
+  };
+
+  // Starting an in-clinic consult checks the patient in (in session), so the
+  // slot can no longer be marked missed while the doctor writes notes.
+  const startConsult = async (patient: QueuePatient) => {
+    if (patient.mode !== "clinic" || patient.status === "in-session") {
+      await openConsultForm(patient);
+      return;
+    }
+
+    setStartingConsultId(patient.appointmentId);
+    try {
+      await apiClient(
+        `/api/appointments?action=start-consult&appointmentId=${encodeURIComponent(patient.appointmentId)}`,
+        { method: "PATCH" },
+      );
+      await openConsultForm(patient);
+    } catch (startError) {
+      alert(startError instanceof Error ? startError.message : "Unable to start this consultation");
+      refetchQueue();
+    } finally {
+      setStartingConsultId(null);
+    }
+  };
   const queuePatients: QueuePatient[] = rawQueuePatients ?? [];
 
   // Status (waiting/checked-in/in-session/completed/missed) is decided
@@ -666,7 +705,12 @@ export default function ProDashboardPage() {
                                   </div>
 
                                   {patient.status === "missed" && (
-                                    <div className="flex gap-2">
+                                    <div className="flex flex-col sm:items-end gap-2">
+                                      {patient.missedBy && (
+                                        <span className="text-xs font-semibold text-red-600">
+                                          {MISSED_BY_LABEL_FOR_DOCTOR[patient.missedBy]}
+                                        </span>
+                                      )}
                                       <span
                                         className="inline-flex items-center justify-center rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-400 bg-gray-50 cursor-not-allowed"
                                         aria-disabled="true"
@@ -677,9 +721,23 @@ export default function ProDashboardPage() {
                                     </div>
                                   )}
 
-                                  {isPending && (
+                                  {patient.status === "awaiting-notes" && (
+                                    <div className="flex flex-col sm:items-end gap-2">
+                                      <span className="text-xs font-semibold text-violet-600">
+                                        Call ended — add prescription or notes to complete
+                                      </span>
+                                      <button
+                                        onClick={() => void openConsultForm(patient)}
+                                        className="inline-flex items-center justify-center rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-700 shadow-sm"
+                                      >
+                                        Add Notes
+                                      </button>
+                                    </div>
+                                  )}
+
+                                  {(isPending || patient.status === "in-session") && (
                                       <div className="flex gap-2">
-                                        {selectedDate !== todayStr ? (
+                                        {selectedDate !== todayStr && patient.status !== "in-session" ? (
                                           <span
                                             className="inline-flex items-center justify-center rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-400 bg-gray-50 cursor-not-allowed"
                                             aria-disabled="true"
@@ -699,20 +757,15 @@ export default function ProDashboardPage() {
                                                 className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 shadow-sm"
                                               >
                                                 <Video className="w-3.5 h-3.5" />
-                                                Start Video
+                                                {patient.status === "in-session" ? "Rejoin Video" : "Start Video"}
                                               </button>
                                             )}
                                             <button
-                                              onClick={async () => {
-                                                await setNavContext("patient", {
-                                                  patientId: patient.id,
-                                                  appointmentId: patient.appointmentId,
-                                                });
-                                                router.push("/pro/patient");
-                                              }}
-                                              className="inline-flex items-center justify-center rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+                                              onClick={() => void startConsult(patient)}
+                                              disabled={startingConsultId === patient.appointmentId}
+                                              className="inline-flex items-center justify-center rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
                                             >
-                                              Consult
+                                              {startingConsultId === patient.appointmentId ? "Starting…" : "Consult"}
                                             </button>
                                           </div>
                                         )}
