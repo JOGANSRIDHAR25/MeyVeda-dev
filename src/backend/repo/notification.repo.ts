@@ -1,7 +1,10 @@
 import { createClient } from "@/shared/db/supabase.server";
 import { AppError } from "@/shared/api/api-error";
-import { isAppointmentPastCutoff } from "@/shared/appointments/missed-cutoff";
-import { MISSABLE_APPOINTMENT_STATUSES } from "@/shared/appointments/attendance";
+import {
+  MISSABLE_APPOINTMENT_STATUSES,
+  isArrivedClinicPatient,
+  isPastMissedDeadline,
+} from "@/shared/appointments/attendance";
 import { AppointmentAttendanceRepository, MISSABLE_APPOINTMENT_COLUMNS } from "./appointment-attendance.repo";
 
 export class NotificationRepository {
@@ -54,12 +57,16 @@ export class NotificationRepository {
       // pulled live from that appointment's own practitioner, since it varies
       // doctor to doctor and can change over time.
       const practitionerRow = Array.isArray(appt.practitioner) ? appt.practitioner[0] : appt.practitioner;
-      const isPast = isAppointmentPastCutoff(
-        appt.scheduled_date,
-        appt.scheduled_time,
-        practitionerRow?.slot_duration_min,
-        practitionerRow?.buffer_min
-      );
+      // An arrived in-clinic patient waits until that doctor's working hours end.
+      const workingEndTime =
+        isArrivedClinicPatient(appt) && appt.practitioner_id
+          ? await AppointmentAttendanceRepository.getWorkingEndTime(appt.practitioner_id, appt.scheduled_date)
+          : null;
+      const isPast = isPastMissedDeadline(appt, {
+        slotDurationMin: practitionerRow?.slot_duration_min,
+        bufferMin: practitionerRow?.buffer_min,
+        workingEndTime,
+      });
       if (!isPast) continue;
 
       await AppointmentAttendanceRepository.markMissed(appt);

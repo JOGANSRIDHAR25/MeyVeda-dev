@@ -50,6 +50,8 @@ export type QueuePatient = {
   status: QueueStatus;
   /** For a missed appointment: who didn't show up. */
   missedBy?: MissedBy | null;
+  /** Missed in-clinic visit where the patient had arrived but left before being seen. */
+  patientLeft?: boolean;
   waitMins: number;
   reason: string;
   abha: string | null;

@@ -29,6 +29,7 @@ export type AppointmentDbRow = {
   video_status: string | null;
   session_ended_at: string | null;
   missed_by: string | null;
+  patient_joined_at: string | null;
 
   slot:
   | {
@@ -193,6 +194,7 @@ const APPOINTMENT_SELECT = `
   video_status,
   session_ended_at,
   missed_by,
+  patient_joined_at,
   slot:slots (
     fee
   ),

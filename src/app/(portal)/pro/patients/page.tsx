@@ -46,6 +46,7 @@ type AppointmentEntry = {
   status: "today" | "upcoming" | "missed";
   isMissed?: boolean;
   missedBy?: MissedBy | null;
+  patientLeft?: boolean;
 };
 
 type FamilyMember = {
@@ -470,7 +471,7 @@ export default function PatientsPage() {
                         </div>
                         <p className="text-sm text-slate-600 font-medium">{appt.time || "Time not set"}</p>
                         {appt.isMissed && appt.missedBy && (
-                          <p className="text-xs font-semibold text-amber-700">{MISSED_BY_LABEL_FOR_DOCTOR[appt.missedBy]}</p>
+                          <p className="text-xs font-semibold text-amber-700">{appt.patientLeft ? "Patient left before the consultation" : MISSED_BY_LABEL_FOR_DOCTOR[appt.missedBy]}</p>
                         )}
                       </div>
                     </div>

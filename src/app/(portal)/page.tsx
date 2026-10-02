@@ -130,6 +130,9 @@ export default function HomePage() {
 
   const hasUpcoming = upcomingAppointments.length > 0;
   const nextUpcoming = hasUpcoming ? upcomingAppointments[0] : null;
+  // Join Room / Waiting Room only make sense for a video consultation — an
+  // in-clinic visit has no room to join.
+  const nextIsVideo = ENABLE_VIDEO_CONSULTATION && nextUpcoming?.mode === "video";
 
   const nextUpcomingCall = upcomingCalls?.[0];
   let showBanner = false;
@@ -235,10 +238,10 @@ export default function HomePage() {
           )}
         </div>
         {nextUpcoming && (
-          <Link href={ENABLE_VIDEO_CONSULTATION ? `/consult?id=${nextUpcoming.consultationId || nextUpcoming.id}` : "/appointments"}>
+          <Link href={nextIsVideo ? `/consult?id=${nextUpcoming.consultationId || nextUpcoming.id}` : "/appointments"}>
             <div className="flex items-center gap-2 bg-gradient-to-r from-herb-green to-herb-green-light text-white px-5 py-3 rounded-2xl text-sm font-semibold hover:shadow-lg hover:opacity-95 transition-all cursor-pointer shadow-sm active:scale-98">
-              <span>{ENABLE_VIDEO_CONSULTATION ? "📹" : "🏥"}</span>
-              <span>{ENABLE_VIDEO_CONSULTATION ? "Join Today's Consult" : "View Today's Appointment"}</span>
+              <span>{nextIsVideo ? "📹" : "🏥"}</span>
+              <span>{nextIsVideo ? "Join Today's Consult" : "View Today's Appointment"}</span>
             </div>
           </Link>
         )}
@@ -276,12 +279,12 @@ export default function HomePage() {
 
                     {nextUpcoming.expiresAtLabel && (
                       <p className="mt-2 text-[11px] text-white/75 font-medium">
-                        Join before {nextUpcoming.expiresAtLabel}, or this slot will be marked missed.
+                        {nextIsVideo ? "Join" : "Arrive at the clinic"} before {nextUpcoming.expiresAtLabel}, or this slot will be marked missed.
                       </p>
                     )}
 
                     <div className="mt-6 flex items-center gap-3 flex-wrap">
-                      {ENABLE_VIDEO_CONSULTATION ? (
+                      {nextIsVideo ? (
                         <>
                           <button
                             onClick={async () => {
@@ -311,11 +314,13 @@ export default function HomePage() {
                           </button>
                         </Link>
                       )}
-                      <Link href="/appointments">
-                        <button className="px-5 py-2.5 bg-transparent text-white/90 text-xs font-bold rounded-xl hover:bg-white/10 hover:text-white transition-all active:scale-95">
-                          Reschedule
-                        </button>
-                      </Link>
+                      {!nextUpcoming.inSession && !nextUpcoming.arrived && (
+                        <Link href="/appointments">
+                          <button className="px-5 py-2.5 bg-transparent text-white/90 text-xs font-bold rounded-xl hover:bg-white/10 hover:text-white transition-all active:scale-95">
+                            Reschedule
+                          </button>
+                        </Link>
+                      )}
                     </div>
                   </div>
 

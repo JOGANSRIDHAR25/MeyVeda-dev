@@ -222,6 +222,8 @@ export default function AppointmentsPage() {
 
     const statusPill = isUpcoming && appt.inSession
       ? { label: "In Session", cls: "bg-emerald-50 text-emerald-700 border-emerald-100" }
+      : isUpcoming && appt.arrived
+      ? { label: "Arrived", cls: "bg-indigo-50 text-indigo-700 border-indigo-100" }
       : isUpcoming
       ? { label: "Confirmed", cls: "bg-emerald-50 text-emerald-700 border-emerald-100" }
       : isMissed
@@ -275,7 +277,7 @@ export default function AppointmentsPage() {
 
               {isMissed && appt.missedBy && (
                 <p className="text-[11px] text-amber-700 font-semibold">
-                  {MISSED_BY_LABEL_FOR_PATIENT[appt.missedBy]}
+                  {appt.patientLeft ? "Closed — you left before the consultation" : MISSED_BY_LABEL_FOR_PATIENT[appt.missedBy]}
                 </p>
               )}
 
@@ -325,7 +327,7 @@ export default function AppointmentsPage() {
                 </button>
               ) : null}
 
-              {isUpcoming && !appt.inSession && (
+              {isUpcoming && !appt.inSession && !appt.arrived && (
                 <button
                   onClick={() => setCancellingId(cancellingId === appt.id ? null : appt.id)}
                   className="py-2 px-4 rounded-full border border-neutral-200 hover:border-red-200 hover:bg-red-50 text-neutral-500 hover:text-red-500 text-xs font-bold transition-all cursor-pointer"

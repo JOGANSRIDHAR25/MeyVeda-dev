@@ -19,9 +19,13 @@ import { AppError } from "@/shared/api/api-error";
 import { resolveActiveFeeRupees } from "@/lib/fee";
 import { getAppointmentCutoffMs, isAppointmentPastCutoff } from "@/shared/appointments/missed-cutoff";
 import {
+  didPatientLeave,
+  isArrivedClinicPatient,
   isAwaitingNotes,
   isMissableStatus,
   isMissedBy,
+  isPastMissedDeadline,
+  type ClinicCloseReason,
   type MissedBy,
 } from "@/shared/appointments/attendance";
 
@@ -55,8 +59,12 @@ export type AppointmentRow = {
   pastOutcome?: "completed" | "missed" | "awaiting_notes";
   /** For a missed appointment: who didn't show up. */
   missedBy?: MissedBy;
+  /** Missed in-clinic visit where the patient had arrived but left before being seen. */
+  patientLeft?: boolean;
   /** Both sides have joined and the consultation is happening right now. */
   inSession?: boolean;
+  /** In-clinic: the patient has been marked arrived and is waiting for the doctor. */
+  arrived?: boolean;
   fee: string;
   duration?: string;
   rating?: number;
@@ -145,6 +153,10 @@ export const videoAppointmentIdParamSchema = z.object({
   appointmentId: z
     .string()
     .uuid("Invalid video appointment ID format"),
+});
+
+export const closeClinicAppointmentSchema = z.object({
+  reason: z.enum(["doctor_unavailable", "patient_left"]),
 });
 
 export const updateVideoStatusSchema = z.object({
@@ -728,6 +740,85 @@ export class AppointmentsService {
   }
 
   /**
+   * The practitioner's side (doctor or assistant) marks an in-clinic
+   * patient as arrived, so they are no longer missed at the slot cutoff
+   * while waiting for the doctor.
+   */
+  static async markClinicArrived(
+    authUser: AuthUser,
+    appointmentId: string,
+  ): Promise<void> {
+    if (!isPractitionerRole(authUser)) {
+      throw new AppError(
+        "Only the practitioner's team can mark a patient as arrived",
+        403,
+      );
+    }
+
+    const practitionerId =
+      await AppointmentsRepository.getPractitionerIdFromUserId(
+        await resolveActingPractitionerUserId(authUser),
+      );
+
+    if (!practitionerId) {
+      throw new AppError("Practitioner profile not found", 404);
+    }
+
+    const marked =
+      await AppointmentAttendanceRepository.markClinicArrived(
+        appointmentId,
+        practitionerId,
+      );
+
+    if (!marked) {
+      throw new AppError(
+        "This patient can't be marked arrived — only today's in-clinic appointments that are still waiting can be",
+        409,
+      );
+    }
+  }
+
+  /**
+   * The practitioner's side closes an arrived in-clinic appointment that
+   * won't be seen today — the doctor isn't available, or the patient left.
+   */
+  static async closeArrivedClinicAppointment(
+    authUser: AuthUser,
+    appointmentId: string,
+    reason: ClinicCloseReason,
+  ): Promise<void> {
+    if (!isPractitionerRole(authUser)) {
+      throw new AppError(
+        "Only the practitioner's team can close an appointment",
+        403,
+      );
+    }
+
+    const practitionerId =
+      await AppointmentsRepository.getPractitionerIdFromUserId(
+        await resolveActingPractitionerUserId(authUser),
+      );
+
+    if (!practitionerId) {
+      throw new AppError("Practitioner profile not found", 404);
+    }
+
+    const closed =
+      await AppointmentAttendanceRepository.closeArrivedClinicAppointment(
+        appointmentId,
+        practitionerId,
+        reason,
+      );
+
+    if (!closed) {
+      throw new AppError(
+        "This appointment can't be closed — only in-clinic appointments with an arrived patient can be",
+        409,
+      );
+    }
+  }
+
+  /**
    * The practitioner starts an in-clinic consultation from their queue. The
    * patient is physically present, so both sides are in: the appointment
    * moves to in_session and can no longer be marked missed.
@@ -1197,6 +1288,7 @@ export class AppointmentsService {
         | "awaiting_notes"
         | undefined;
       let missedBy: MissedBy | undefined;
+      let patientLeft = false;
 
       // "Missed" is derived from the scheduled window (start + the
       // practitioner's own slot duration + buffer — the same dynamic cutoff
@@ -1207,14 +1299,14 @@ export class AppointmentsService {
       // even before the async no_show job runs.
       // Only an appointment the two sides were never in together can be
       // missed — an in-session one stays live however long it runs.
-      const isPastCutoff =
-        isMissableStatus(row.status) &&
-        isAppointmentPastCutoff(
-          row.scheduled_date,
-          row.scheduled_time,
-          practitioner?.slot_duration_min,
-          practitioner?.buffer_min
-        );
+      // An in-clinic patient already marked arrived waits for the doctor
+      // instead: they stay "Arrived" here until a sweep (doctor's queue /
+      // notifications) or staff close the appointment (see isPastMissedDeadline).
+      const isPastCutoff = isPastMissedDeadline(row, {
+        slotDurationMin: practitioner?.slot_duration_min,
+        bufferMin: practitioner?.buffer_min,
+      });
+      const arrived = isArrivedClinicPatient(row);
 
       if (row.status === "cancelled") {
         uiStatus = "cancelled";
@@ -1233,12 +1325,14 @@ export class AppointmentsService {
         uiStatus = "past";
         pastOutcome = "missed";
         missedBy = isMissedBy(row.missed_by) ? row.missed_by : undefined;
+        patientLeft = didPatientLeave(row.missed_by, row.patient_joined_at);
       }
 
       const inSession = uiStatus === "upcoming" && row.status === "in_session";
+      const hasArrived = uiStatus === "upcoming" && arrived;
 
       const expiresAtLabel =
-        uiStatus === "upcoming" && !inSession
+        uiStatus === "upcoming" && !inSession && !hasArrived
           ? new Date(
             getAppointmentCutoffMs(
               row.scheduled_date,
@@ -1275,7 +1369,9 @@ export class AppointmentsService {
         status: uiStatus,
         pastOutcome,
         missedBy,
+        patientLeft,
         inSession,
+        arrived: hasArrived,
         fee,
         duration: row.duration_min
           ? `${row.duration_min} min`

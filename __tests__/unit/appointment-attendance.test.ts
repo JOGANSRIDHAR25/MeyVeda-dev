@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  didPatientLeave,
+  isArrivedClinicPatient,
   isAwaitingNotes,
   isMissableStatus,
   isMissedBy,
+  isPastMissedDeadline,
   resolveMissedBy,
 } from "@/shared/appointments/attendance";
 import { appointmentMissedTemplate } from "@/lib/email/templates/appointment-missed";
@@ -78,7 +81,7 @@ describe("appointmentMissedTemplate", () => {
   it("does not blame the patient when the doctor didn't join", () => {
     const email = appointmentMissedTemplate({ ...base, missedBy: "practitioner" });
     expect(email.subject).toBe("Your MeyVeda appointment did not take place");
-    expect(email.text).toContain("Dr. Rao was unable to join");
+    expect(email.text).toContain("Dr. Rao was not available for the appointment below");
     expect(email.text).not.toContain("you missed");
   });
 });
@@ -97,11 +100,86 @@ describe("appointmentMissedTemplate for a family member", () => {
   it("names the family member when the doctor didn't join", () => {
     const email = appointmentMissedTemplate({ ...base, missedBy: "practitioner" });
     expect(email.subject).toBe("Ravi's MeyVeda appointment did not take place");
-    expect(email.text).toContain("Dr. Rao was unable to join your family member Ravi's appointment below");
+    expect(email.text).toContain("Dr. Rao was not available for your family member Ravi's appointment below");
   });
 
   it("capitalises the sentence when nobody joined", () => {
     const email = appointmentMissedTemplate({ ...base, missedBy: "both" });
     expect(email.text).toContain("Your family member Ravi's appointment below ended without the consultation taking place.");
+  });
+});
+
+describe("in-clinic arrival (Mark Arrived)", () => {
+  // Slot 10:00, 20 min + 5 min buffer => cutoff 10:25 on 2026-10-01.
+  const slot = { scheduled_date: "2026-10-01", scheduled_time: "10:00:00" };
+  const at = (time: string, date = "2026-10-01") => new Date(`${date}T${time}`);
+  const arrivedClinic = { ...slot, mode: "clinic", status: "checked_in", patient_joined_at: "2026-10-01T04:25:00.000Z" };
+
+  it("recognises an arrived clinic patient", () => {
+    expect(isArrivedClinicPatient(arrivedClinic)).toBe(true);
+    expect(isArrivedClinicPatient({ ...arrivedClinic, mode: "video" })).toBe(false);
+    expect(isArrivedClinicPatient({ ...arrivedClinic, status: "scheduled", patient_joined_at: null })).toBe(false);
+  });
+
+  it("misses a clinic patient who never arrived once the cutoff passes", () => {
+    const notArrived = { ...slot, mode: "clinic", status: "scheduled", patient_joined_at: null };
+    expect(isPastMissedDeadline(notArrived, { slotDurationMin: 20, bufferMin: 5, now: at("10:20:00") })).toBe(false);
+    expect(isPastMissedDeadline(notArrived, { slotDurationMin: 20, bufferMin: 5, now: at("10:30:00") })).toBe(true);
+  });
+
+  it("closes an arrived clinic patient when the doctor's working hours end (+30 min grace)", () => {
+    const opts = { slotDurationMin: 20, bufferMin: 5, workingEndTime: "13:00:00" };
+    expect(isPastMissedDeadline(arrivedClinic, { ...opts, now: at("10:30:00") })).toBe(false);
+    expect(isPastMissedDeadline(arrivedClinic, { ...opts, now: at("13:20:00") })).toBe(false);
+    expect(isPastMissedDeadline(arrivedClinic, { ...opts, now: at("13:31:00") })).toBe(true);
+  });
+
+  it("never closes an arrived clinic patient before their own slot window ends", () => {
+    // Working hours already over at 09:00, but the slot itself runs to 10:25.
+    const opts = { slotDurationMin: 20, bufferMin: 5, workingEndTime: "09:00:00" };
+    expect(isPastMissedDeadline(arrivedClinic, { ...opts, now: at("10:20:00") })).toBe(false);
+    expect(isPastMissedDeadline(arrivedClinic, { ...opts, now: at("10:30:00") })).toBe(true);
+  });
+
+  it("tells a patient who left apart from one who never came", () => {
+    expect(didPatientLeave("patient", arrivedClinic.patient_joined_at)).toBe(true);
+    expect(didPatientLeave("patient", null)).toBe(false);
+    expect(didPatientLeave("practitioner", arrivedClinic.patient_joined_at)).toBe(false);
+  });
+
+  it("without known working hours, keeps an arrived clinic patient waiting all day", () => {
+    expect(isPastMissedDeadline(arrivedClinic, { slotDurationMin: 20, bufferMin: 5, now: at("10:30:00") })).toBe(false);
+    expect(isPastMissedDeadline(arrivedClinic, { slotDurationMin: 20, bufferMin: 5, now: at("23:50:00") })).toBe(false);
+  });
+
+  it("misses an arrived clinic patient once the day is over - blamed on the doctor", () => {
+    expect(isPastMissedDeadline(arrivedClinic, { slotDurationMin: 20, bufferMin: 5, now: at("00:05:00", "2026-10-02") })).toBe(true);
+    expect(resolveMissedBy({ mode: "clinic", patientJoinedAt: arrivedClinic.patient_joined_at, practitionerJoinedAt: null })).toBe("practitioner");
+  });
+
+  it("still misses a video slot at the cutoff when only one side came", () => {
+    const videoWaiting = { ...slot, mode: "video", status: "checked_in", patient_joined_at: "2026-10-01T04:25:00.000Z" };
+    expect(isPastMissedDeadline(videoWaiting, { slotDurationMin: 20, bufferMin: 5, now: at("10:30:00") })).toBe(true);
+  });
+
+  it("never misses an in-session or completed appointment", () => {
+    expect(isPastMissedDeadline({ ...slot, mode: "clinic", status: "in_session", patient_joined_at: null }, { slotDurationMin: 20, bufferMin: 5, now: at("18:00:00") })).toBe(false);
+    expect(isPastMissedDeadline({ ...slot, mode: "video", status: "completed", patient_joined_at: null }, { slotDurationMin: 20, bufferMin: 5, now: at("18:00:00") })).toBe(false);
+  });
+});
+
+describe("appointmentMissedTemplate when the patient left the clinic", () => {
+  const base = { patientName: "Asha", practitionerName: "Rao", date: "October 1, 2026", time: "10:00 AM", missedBy: "patient" as const, patientLeft: true };
+
+  it("says the appointment was closed because they left", () => {
+    const email = appointmentMissedTemplate(base);
+    expect(email.subject).toBe("Your MeyVeda appointment was closed");
+    expect(email.text).toContain("The appointment below was closed because you left before the consultation.");
+  });
+
+  it("words it for a family member", () => {
+    const email = appointmentMissedTemplate({ ...base, patientName: "Priya", familyMemberName: "Ravi" });
+    expect(email.subject).toBe("Ravi's MeyVeda appointment was closed");
+    expect(email.text).toContain("Your family member Ravi's appointment below was closed because they left before the consultation.");
   });
 });

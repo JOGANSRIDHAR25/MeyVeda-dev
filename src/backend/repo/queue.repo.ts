@@ -1,6 +1,11 @@
 import { createClient } from "@/shared/db/supabase.server";
-import { isAppointmentPastCutoff } from "@/shared/appointments/missed-cutoff";
-import { isAwaitingNotes, isMissableStatus, isMissedBy } from "@/shared/appointments/attendance";
+import {
+  didPatientLeave,
+  isAwaitingNotes,
+  isMissableStatus,
+  isMissedBy,
+  isPastMissedDeadline,
+} from "@/shared/appointments/attendance";
 import { AppointmentAttendanceRepository } from "./appointment-attendance.repo";
 
 function formatTime(timeStr: string): string {
@@ -107,9 +112,17 @@ export class QueueRepository {
         const durationMin = settingsRow?.slot_duration_min || 20;
         const bufferMin = settingsRow?.buffer_min || 0;
 
+        // A clinic patient already marked arrived keeps waiting for the doctor
+        // past the cutoff — until the doctor's working hours for the day end
+        // (see isPastMissedDeadline).
+        const workingEndTime = await AppointmentAttendanceRepository.getWorkingEndTime(practitionerId, targetDate);
+
         missedAppointments = appointments.filter((appt: any) => {
-          if (!isMissableStatus(appt.status) || !appt.scheduled_time) return false;
-          return isAppointmentPastCutoff(targetDate, appt.scheduled_time, durationMin, bufferMin);
+          if (!appt.scheduled_time) return false;
+          return isPastMissedDeadline(
+            { ...appt, scheduled_date: targetDate },
+            { slotDurationMin: durationMin, bufferMin, workingEndTime },
+          );
         });
       }
 
@@ -200,6 +213,7 @@ export class QueueRepository {
         mode: appt.mode,
         status: mappedStatus,
         missedBy: mappedStatus === "missed" && isMissedBy(appt.missed_by) ? appt.missed_by : null,
+        patientLeft: mappedStatus === "missed" && didPatientLeave(appt.missed_by, appt.patient_joined_at),
         waitMins: Math.max(0, waitMins),
         reason: appt.reason_for_visit || "Consultation",
         abha: abhaId,

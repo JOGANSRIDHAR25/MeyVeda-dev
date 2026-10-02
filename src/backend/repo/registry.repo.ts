@@ -1,5 +1,5 @@
 import { createClient } from "@/shared/db/supabase.server";
-import { isMissedBy } from "@/shared/appointments/attendance";
+import { didPatientLeave, isMissedBy } from "@/shared/appointments/attendance";
 
 export class RegistryRepository {
   static async getPractitionerIdFromUserId(userId: string): Promise<string> {
@@ -21,7 +21,7 @@ export class RegistryRepository {
 
     const { data: appointments } = await supabase
       .from("appointments")
-      .select("patient_id, scheduled_date, scheduled_time, status, missed_by")
+      .select("patient_id, scheduled_date, scheduled_time, status, missed_by, patient_joined_at")
       .eq("practitioner_id", resolvedPractitionerId)
       .neq("status", "cancelled");
 
@@ -325,6 +325,7 @@ export class RegistryRepository {
             // show a "Missed" badge instead of just "Today".
             isMissed: a.status === "no_show" || a.status === "missed",
             missedBy: a.status === "no_show" && isMissedBy(a.missed_by) ? a.missed_by : null,
+            patientLeft: a.status === "no_show" && didPatientLeave(a.missed_by, a.patient_joined_at),
           };
         });
 

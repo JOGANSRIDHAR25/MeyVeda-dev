@@ -3,8 +3,10 @@ import "server-only";
 import { createClient } from "@/shared/db/supabase.server";
 import {
   MISSABLE_APPOINTMENT_STATUSES,
+  isArrivedClinicPatient,
   isMissableStatus,
   resolveMissedBy,
+  type ClinicCloseReason,
   type MissedBy,
 } from "@/shared/appointments/attendance";
 import { EmailService } from "../service/email.service";
@@ -41,12 +43,17 @@ function missedNotificationBody(
   date: string,
   time: string,
   familyMemberName?: string,
+  patientLeft = false,
 ): string {
   const rebook = "You can book another appointment if you would like to continue your consultation.";
   const whose = familyMemberName ? `your family member ${familyMemberName}'s appointment` : "your appointment";
   const Whose = whose.charAt(0).toUpperCase() + whose.slice(1);
+  if (patientLeft) {
+    const who = familyMemberName ? "they" : "you";
+    return `${Whose} with ${practitionerName} on ${date} at ${time} was closed because ${who} left before the consultation. ${rebook}`;
+  }
   if (missedBy === "practitioner") {
-    return `${practitionerName} was unable to join ${whose} on ${date} at ${time}. We're sorry for the inconvenience. ${rebook}`;
+    return `${practitionerName} was not available for ${whose} on ${date} at ${time}. We're sorry for the inconvenience. ${rebook}`;
   }
   if (missedBy === "both") {
     return `${Whose} with ${practitionerName} on ${date} at ${time} ended without the consultation taking place. ${rebook}`;
@@ -152,7 +159,11 @@ export class AppointmentAttendanceRepository {
     };
   }
 
-  private static async notifyPatientOfMissed(appt: MissableAppointment, missedBy: MissedBy): Promise<void> {
+  private static async notifyPatientOfMissed(
+    appt: MissableAppointment,
+    missedBy: MissedBy,
+    patientLeft = false,
+  ): Promise<void> {
     if (!appt.patient_id) return;
     const supabase = createClient();
 
@@ -175,8 +186,8 @@ export class AppointmentAttendanceRepository {
     const { error: notifError } = await supabase.from("notifications").insert({
       user_id: recipient.userId,
       channel: "in_app",
-      title: "Appointment Missed",
-      body: missedNotificationBody(missedBy, practitionerName, formattedDate, apptTime, recipient.familyMemberName),
+      title: patientLeft ? "Appointment Closed" : "Appointment Missed",
+      body: missedNotificationBody(missedBy, practitionerName, formattedDate, apptTime, recipient.familyMemberName, patientLeft),
       reference_id: appt.id,
       reference_type: "appointment",
       is_read: false,
@@ -194,6 +205,7 @@ export class AppointmentAttendanceRepository {
         time: apptTime,
         missedBy,
         familyMemberName: recipient.familyMemberName,
+        patientLeft,
       });
     }
   }
@@ -247,6 +259,136 @@ export class AppointmentAttendanceRepository {
     if (updateError) {
       console.error("[AppointmentAttendanceRepository] Error recording arrival:", updateError.message);
     }
+  }
+
+  /**
+   * "HH:MM:SS" at which the practitioner's working hours end on a given
+   * date — that date's calendar override if there is one, otherwise their
+   * weekly schedule. Null when unknown (no schedule, holiday or leave).
+   */
+  static async getWorkingEndTime(practitionerId: string, date: string): Promise<string | null> {
+    const supabase = createClient();
+
+    const { data: calendarRow, error: calendarError } = await supabase
+      .from("calendar_availability")
+      .select("working_end, is_holiday, is_leave")
+      .eq("practitioner_id", practitionerId)
+      .eq("date", date)
+      .limit(1)
+      .maybeSingle();
+
+    if (calendarError) {
+      console.error("[AppointmentAttendanceRepository] Error reading calendar availability:", calendarError.message);
+    }
+    if (calendarRow) {
+      if (calendarRow.is_holiday || calendarRow.is_leave) return null;
+      return calendarRow.working_end ?? null;
+    }
+
+    const [year, month, day] = date.split("-").map(Number);
+    const jsDay = new Date(year, month - 1, day).getDay();
+    const dayOfWeek = jsDay === 0 ? 6 : jsDay - 1;
+
+    const { data: scheduleRow, error: scheduleError } = await supabase
+      .from("availability_schedules")
+      .select("end_time")
+      .eq("practitioner_id", practitionerId)
+      .eq("day_of_week", dayOfWeek)
+      .eq("is_active", true)
+      .order("end_time", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (scheduleError) {
+      console.error("[AppointmentAttendanceRepository] Error reading weekly schedule:", scheduleError.message);
+    }
+    return scheduleRow?.end_time ?? null;
+  }
+
+  /**
+   * Staff close an arrived in-clinic appointment that won't be seen today:
+   * the doctor isn't available (missed by the practitioner) or the patient
+   * left before being seen (missed by the patient). Notifies the patient.
+   * Returns false when the appointment isn't an arrived clinic one.
+   */
+  static async closeArrivedClinicAppointment(
+    appointmentId: string,
+    practitionerId: string,
+    reason: ClinicCloseReason,
+  ): Promise<boolean> {
+    const supabase = createClient();
+    const { data: appt, error } = await supabase
+      .from("appointments")
+      .select(MISSABLE_APPOINTMENT_COLUMNS)
+      .eq("id", appointmentId)
+      .eq("practitioner_id", practitionerId)
+      .maybeSingle<MissableAppointment>();
+
+    if (error) {
+      console.error("[AppointmentAttendanceRepository] Error reading clinic appointment:", error.message);
+      return false;
+    }
+    if (!appt || !isArrivedClinicPatient(appt)) return false;
+
+    const missedBy: MissedBy = reason === "patient_left" ? "patient" : "practitioner";
+    const { data: updated, error: updateError } = await supabase
+      .from("appointments")
+      .update({ status: "no_show", missed_by: missedBy, noshow_marked_at: new Date().toISOString() })
+      .eq("id", appointmentId)
+      .eq("status", "checked_in")
+      .select("id");
+
+    if (updateError) {
+      console.error("[AppointmentAttendanceRepository] Error closing clinic appointment:", updateError.message);
+      return false;
+    }
+    if (!updated || updated.length === 0) return false;
+
+    await this.notifyPatientOfMissed(appt, missedBy, reason === "patient_left");
+    return true;
+  }
+
+  /**
+   * Reception (or the doctor) marks an in-clinic patient as arrived for
+   * today's appointment: checked_in, with the patient's arrival time. From
+   * here the patient waits for the doctor and is no longer missed at the slot
+   * cutoff (only when the doctor's working hours end, or when closed by hand). Returns false when the appointment isn't one that can be marked.
+   */
+  static async markClinicArrived(appointmentId: string, practitionerId: string): Promise<boolean> {
+    const supabase = createClient();
+    const { data: appt, error } = await supabase
+      .from("appointments")
+      .select("id, status, mode, scheduled_date, patient_joined_at, checked_in_at")
+      .eq("id", appointmentId)
+      .eq("practitioner_id", practitionerId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("[AppointmentAttendanceRepository] Error reading clinic appointment:", error.message);
+      return false;
+    }
+    if (!appt || appt.mode !== "clinic") return false;
+    if (appt.scheduled_date !== new Date().toLocaleDateString("en-CA")) return false;
+    if (appt.status === "checked_in" && appt.patient_joined_at) return true;
+    if (!isMissableStatus(appt.status)) return false;
+
+    const now = new Date().toISOString();
+    const { data: updated, error: updateError } = await supabase
+      .from("appointments")
+      .update({
+        status: "checked_in",
+        patient_joined_at: appt.patient_joined_at ?? now,
+        checked_in_at: appt.checked_in_at ?? now,
+      })
+      .eq("id", appointmentId)
+      .in("status", [...MISSABLE_APPOINTMENT_STATUSES])
+      .select("id");
+
+    if (updateError) {
+      console.error("[AppointmentAttendanceRepository] Error marking clinic patient arrived:", updateError.message);
+      return false;
+    }
+    return Boolean(updated && updated.length > 0);
   }
 
   /**
